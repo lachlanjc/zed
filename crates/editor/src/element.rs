@@ -32,15 +32,15 @@ use gpui::{
     transparent_black, Action, AnchorCorner, AnyElement, AppContext, AvailableSpace, Bounds,
     ClipboardItem, ContentMask, Corners, CursorStyle, DispatchPhase, Edges, Element,
     ElementContext, ElementInputHandler, Entity, Hitbox, Hsla, InteractiveElement, IntoElement,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    ParentElement, Pixels, ScrollDelta, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString,
-    Size, Stateful, StatefulInteractiveElement, Style, Styled, TextRun, TextStyle,
+    Model, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PaintQuad, ParentElement, Pixels, ScrollDelta, ScrollHandle, ScrollWheelEvent, ShapedLine,
+    SharedString, Size, Stateful, StatefulInteractiveElement, Style, Styled, TextRun, TextStyle,
     TextStyleRefinement, View, ViewContext, WeakView, WindowContext,
 };
 use itertools::Itertools;
-use language::{language_settings::ShowWhitespaceSetting, Language};
+use language::{language_settings::ShowWhitespaceSetting, Buffer, Language};
 use lsp::DiagnosticSeverity;
-use multi_buffer::{Anchor, MultiBuffer, MultiBufferSnapshot};
+use multi_buffer::{Anchor, ExcerptRange, MultiBuffer, MultiBufferSnapshot};
 use project::{
     project_settings::{GitGutterSetting, ProjectSettings},
     ProjectPath,
@@ -3353,25 +3353,31 @@ fn try_click_diff_hunk(
         &hovered_hunk.display_row_range,
         &editor_snapshot.display_snapshot,
     );
-    let (buffer_snapshot, deleted_text) = editor.buffer().update(cx, |buffer, cx| {
-        let buffer_snapshot = buffer.snapshot(cx);
-        let original_text = original_text(buffer, buffer_range.clone(), cx)?;
-        Some((buffer_snapshot, original_text))
-    })?;
-    let hunk_start = buffer_snapshot.anchor_at(buffer_range.start, Bias::Left);
-    let hunk_end = buffer_snapshot.anchor_at(buffer_range.end, Bias::Left);
+    let (multi_buffer_snapshot, deleted_text_range, deleted_text) =
+        editor.buffer().update(cx, |buffer, cx| {
+            let snapshot = buffer.snapshot(cx);
+            let diff_base = clicked_buffer_diff_base(buffer, buffer_range.clone(), cx)?;
+            let hunk = buffer_diff_hunk(&snapshot, buffer_range.clone())?;
+            let original_text = diff_base
+                .get(hunk.diff_base_byte_range.clone())
+                .map(ToString::to_string)?;
+            Some((snapshot, hunk.diff_base_byte_range, original_text))
+        })?;
+    let height = deleted_text.lines().count() as u8;
+    let hunk_start = multi_buffer_snapshot.anchor_at(buffer_range.start, Bias::Left);
+    let hunk_end = multi_buffer_snapshot.anchor_at(buffer_range.end, Bias::Left);
 
     let mut created_color = cx.theme().status().git().created;
     created_color.fade_out(0.7);
     match hovered_hunk.status {
         DiffHunkStatus::Removed => {
-            insert_deleted_hunk_block(editor, hunk_start, deleted_text, cx);
+            insert_deleted_hunk_block(editor, hunk_start, deleted_text_range, height, cx);
         }
         DiffHunkStatus::Added => {
             editor.highlight_rows::<GitRowHighlight>(hunk_start..hunk_end, Some(created_color), cx);
         }
         DiffHunkStatus::Modified => {
-            insert_deleted_hunk_block(editor, hunk_start, deleted_text, cx);
+            insert_deleted_hunk_block(editor, hunk_start, deleted_text_range, height, cx);
             editor.highlight_rows::<GitRowHighlight>(hunk_start..hunk_end, Some(created_color), cx);
         }
     }
@@ -3382,21 +3388,30 @@ fn try_click_diff_hunk(
 fn insert_deleted_hunk_block(
     editor: &mut Editor,
     position: Anchor,
-    deleted_text: String,
+    deleted_text_range: Range<usize>,
+    deleted_text_height: u8,
     cx: &mut ViewContext<'_, Editor>,
 ) {
-    let height = deleted_text.lines().count() as u8;
+    let Some(diff_base_buffer) = editor
+        .buffer()
+        .read(cx)
+        .excerpt_containing(position, cx)
+        .and_then(|(_, buffer, _)| buffer.update(cx, |buffer, cx| buffer.diff_base_buffer(cx)))
+    else {
+        return;
+    };
+
     let language = editor.language_at(position, cx);
     let new_block_ids = editor.insert_blocks(
         Some(BlockProperties {
             position,
-            height,
+            height: deleted_text_height,
             style: BlockStyle::Flex,
             render: render_deleted_block(
                 language,
                 editor.gutter_width,
-                deleted_text,
-                height as f32,
+                diff_base_buffer,
+                deleted_text_range,
                 cx,
             ),
             disposition: BlockDisposition::Above,
@@ -3410,18 +3425,27 @@ fn insert_deleted_hunk_block(
 fn render_deleted_block(
     language: Option<Arc<Language>>,
     parent_gutter_width: Pixels,
-    deleted_text: String,
-    height: f32,
+    diff_base_buffer: Model<Buffer>,
+    deleted_text_range: Range<usize>,
     cx: &mut ViewContext<'_, Editor>,
 ) -> Box<dyn Send + Fn(&mut BlockContext) -> AnyElement> {
     let mut deleted_color = cx.theme().status().git().deleted;
     deleted_color.fade_out(0.7);
 
+    // TODO kb proper `let replica_id = project.read(cx).replica_id();`
     let removed_editor = cx.new_view(|cx| {
-        let mut editor = Editor::multi_line(cx);
-        editor.soft_wrap_mode_override = Some(language::language_settings::SoftWrap::None);
-        editor.show_wrap_guides = Some(false);
-        editor.set_wrap_width(None, cx);
+        let multi_buffer = cx.new_model(|_| MultiBuffer::new(0, language::Capability::ReadOnly));
+        multi_buffer.update(cx, |multi_buffer, cx| {
+            multi_buffer.push_excerpts(
+                diff_base_buffer,
+                Some(ExcerptRange {
+                    context: deleted_text_range,
+                    primary: None,
+                }),
+                cx,
+            );
+        });
+        let mut editor = Editor::for_multibuffer(multi_buffer, None, cx);
         editor.show_gutter = false;
         if let Some(buffer) = editor.buffer.read(cx).as_singleton() {
             buffer.update(cx, |buffer, cx| {
@@ -3429,7 +3453,6 @@ fn render_deleted_block(
             })
         }
         editor.scroll_manager.set_forbid_vertical_scroll(true);
-        editor.set_text(deleted_text, cx);
         editor.set_read_only(true);
 
         let editor_snapshot = editor.snapshot(cx);
@@ -3439,7 +3462,6 @@ fn render_deleted_block(
             .anchor_after(editor.buffer.read(cx).len(cx));
 
         editor.highlight_rows::<GitRowHighlight>(start..end, Some(deleted_color), cx);
-        // TODO kb disable wrapping
         editor
     });
 
@@ -3451,19 +3473,6 @@ fn render_deleted_block(
             .child(removed_editor.clone())
             .into_any_element()
     })
-}
-
-fn original_text(
-    buffer: &MultiBuffer,
-    buffer_range: Range<Point>,
-    cx: &mut AppContext,
-) -> Option<String> {
-    let snapshot = buffer.snapshot(cx);
-    let diff_base = clicked_buffer_diff_base(buffer, buffer_range.clone(), cx)?;
-    let hunk = buffer_diff_hunk(&snapshot, buffer_range)?;
-    diff_base
-        .get(hunk.diff_base_byte_range)
-        .map(ToString::to_string)
 }
 
 fn clicked_buffer_diff_base(

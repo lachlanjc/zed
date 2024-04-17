@@ -18,7 +18,9 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 pub use clock::ReplicaId;
 use futures::channel::oneshot;
-use gpui::{AppContext, EventEmitter, HighlightStyle, ModelContext, Task, TaskLabel};
+use gpui::{
+    AppContext, Context as _, EventEmitter, HighlightStyle, Model, ModelContext, Task, TaskLabel,
+};
 use lazy_static::lazy_static;
 use lsp::LanguageServerId;
 use parking_lot::Mutex;
@@ -79,6 +81,7 @@ pub enum Capability {
 pub struct Buffer {
     text: TextBuffer,
     diff_base: Option<String>,
+    diff_base_buffer: Option<Model<Self>>,
     git_diff: git::diff::BufferDiff,
     file: Option<Arc<dyn File>>,
     /// The mtime of the file when this buffer was last loaded from
@@ -643,6 +646,7 @@ impl Buffer {
             was_dirty_before_starting_transaction: None,
             text: buffer,
             diff_base,
+            diff_base_buffer: None,
             git_diff: git::diff::BufferDiff::new(),
             file,
             capability,
@@ -868,10 +872,26 @@ impl Buffer {
         self.diff_base.as_deref()
     }
 
+    pub fn diff_base_buffer(&mut self, cx: &mut ModelContext<'_, Self>) -> Option<Model<Self>> {
+        let diff_base = self.diff_base.as_ref()?;
+        Some(
+            self.diff_base_buffer
+                .get_or_insert_with(|| {
+                    cx.new_model(|cx| {
+                        let mut buffer = Self::local(diff_base.clone(), cx);
+                        buffer.set_language(self.language.clone(), cx);
+                        buffer
+                    })
+                })
+                .clone(),
+        )
+    }
+
     /// Sets the text that will be used to compute a Git diff
     /// against the buffer text.
     pub fn set_diff_base(&mut self, diff_base: Option<String>, cx: &mut ModelContext<Self>) {
         self.diff_base = diff_base;
+        self.diff_base_buffer = None;
         if let Some(recalc_task) = self.git_diff_recalc(cx) {
             cx.spawn(|buffer, mut cx| async move {
                 recalc_task.await;
