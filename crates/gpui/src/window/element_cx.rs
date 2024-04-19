@@ -136,7 +136,6 @@ pub(crate) struct Frame {
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
-    pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
@@ -177,7 +176,6 @@ impl Frame {
             hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             content_mask_stack: Vec::new(),
-            element_offset_stack: Vec::new(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
@@ -746,12 +744,9 @@ impl<'a> ElementContext<'a> {
         offset: Point<Pixels>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.window_mut()
-            .next_frame
-            .element_offset_stack
-            .push(offset);
+        self.window_mut().element_offset_stack.push(offset);
         let result = f(self);
-        self.window_mut().next_frame.element_offset_stack.pop();
+        self.window_mut().element_offset_stack.pop();
         result
     }
 
@@ -835,7 +830,6 @@ impl<'a> ElementContext<'a> {
     /// Obtain the current element offset.
     pub fn element_offset(&self) -> Point<Pixels> {
         self.window()
-            .next_frame
             .element_offset_stack
             .last()
             .copied()
