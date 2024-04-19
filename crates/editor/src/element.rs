@@ -3331,7 +3331,7 @@ enum Invisible {
 
 impl Element for EditorElement {
     type BeforeLayout = ();
-    type AfterLayout = EditorLayout;
+    type BeforePaint = EditorLayout;
 
     fn before_layout(&mut self, cx: &mut ElementContext) -> (gpui::LayoutId, ()) {
         self.editor.update(cx, |editor, cx| {
@@ -3380,12 +3380,12 @@ impl Element for EditorElement {
         })
     }
 
-    fn after_layout(
+    fn before_paint(
         &mut self,
         bounds: Bounds<Pixels>,
         _: &mut Self::BeforeLayout,
         cx: &mut ElementContext,
-    ) -> Self::AfterLayout {
+    ) -> Self::BeforePaint {
         let text_style = TextStyleRefinement {
             font_size: Some(self.style.text.font_size),
             line_height: Some(self.style.text.line_height),
@@ -3810,7 +3810,7 @@ impl Element for EditorElement {
         &mut self,
         bounds: Bounds<gpui::Pixels>,
         _: &mut Self::BeforeLayout,
-        layout: &mut Self::AfterLayout,
+        layout: &mut Self::BeforePaint,
         cx: &mut ElementContext,
     ) {
         let focus_handle = self.editor.focus_handle(cx);
@@ -4470,7 +4470,7 @@ mod tests {
         let state = cx
             .update_window(window.into(), |_view, cx| {
                 cx.with_element_context(|cx| {
-                    element.after_layout(
+                    element.before_paint(
                         Bounds {
                             origin: point(px(500.), px(500.)),
                             size: size(px(500.), px(500.)),
@@ -4565,7 +4565,7 @@ mod tests {
         let state = cx
             .update_window(window.into(), |_view, cx| {
                 cx.with_element_context(|cx| {
-                    element.after_layout(
+                    element.before_paint(
                         Bounds {
                             origin: point(px(500.), px(500.)),
                             size: size(px(500.), px(500.)),
@@ -4630,7 +4630,7 @@ mod tests {
         let state = cx
             .update_window(window.into(), |_view, cx| {
                 cx.with_element_context(|cx| {
-                    element.after_layout(
+                    element.before_paint(
                         Bounds {
                             origin: point(px(500.), px(500.)),
                             size: size(px(500.), px(500.)),
@@ -4826,7 +4826,7 @@ mod tests {
         let layout_state = cx
             .update_window(window.into(), |_, cx| {
                 cx.with_element_context(|cx| {
-                    element.after_layout(
+                    element.before_paint(
                         Bounds {
                             origin: point(px(500.), px(500.)),
                             size: size(px(500.), px(500.)),
